@@ -40,11 +40,11 @@ services:
             --entryPoints.http.forwardedHeaders.trustedIPs=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
             --providers.docker=true
             --providers.docker.network=default
-            --experimental.localPlugins.captcha-protect.moduleName=github.com/libops/captcha-protect
+            --experimental.localPlugins.captcha-protect.moduleName=github.com/dararish/captcha-protect
         volumes:
             - /var/run/docker.sock:/var/run/docker.sock:z
             - ./tmp:/tmp:rw
-            - ./../:/plugins-local/src/github.com/libops/captcha-protect:r
+            - ./../:/plugins-local/src/github.com/dararish/captcha-protect:r
         ports:
             - "80:80"
             - "8080:8080"

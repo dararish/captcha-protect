@@ -14,8 +14,8 @@ import (
 	"sync"
 	"time"
 
-	cp "github.com/libops/captcha-protect"
-	"github.com/libops/captcha-protect/internal/helper"
+	cp "github.com/dararish/captcha-protect"
+	"github.com/dararish/captcha-protect/internal/helper"
 )
 
 var (

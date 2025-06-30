@@ -18,9 +18,9 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/libops/captcha-protect/internal/helper"
-	plog "github.com/libops/captcha-protect/internal/log"
-	"github.com/libops/captcha-protect/internal/state"
+	"github.com/dararish/captcha-protect/internal/helper"
+	plog "github.com/dararish/captcha-protect/internal/log"
+	"github.com/dararish/captcha-protect/internal/state"
 
 	lru "github.com/patrickmn/go-cache"
 )

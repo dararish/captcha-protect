@@ -1,6 +1,6 @@
 # Captcha Protect
-[![lint-test](https://github.com/libops/captcha-protect/actions/workflows/lint-test.yml/badge.svg)](https://github.com/libops/captcha-protect/actions/workflows/lint-test.yml)
-[![Go Report Card](https://goreportcard.com/badge/github.com/libops/captcha-protect)](https://goreportcard.com/report/github.com/libops/captcha-protect)
+[![lint-test](https://github.com/dararish/captcha-protect/actions/workflows/lint-test.yml/badge.svg)](https://github.com/dararish/captcha-protect/actions/workflows/lint-test.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/dararish/captcha-protect)](https://goreportcard.com/report/github.com/dararish/captcha-protect)
 
 Traefik middleware to challenge individual IPs in a subnet when traffic spikes are detected from that subnet, using a captcha of your choice for the challenge (turnstile, recaptcha, or hcaptcha). **Requires traefik `v2.11.1` or above**
 
@@ -73,7 +73,7 @@ services:
             --entryPoints.http.address=:80
             --providers.docker=true
             --providers.docker.network=default
-            --experimental.plugins.captcha-protect.modulename=github.com/libops/captcha-protect
+            --experimental.plugins.captcha-protect.modulename=github.com/dararish/captcha-protect
             --experimental.plugins.captcha-protect.version=v1.9.2
         volumes:
             - /var/run/docker.sock:/var/run/docker.sock:z

@@ -1,4 +1,4 @@
-module github.com/libops/captcha-protect
+module github.com/dararish/captcha-protect
 
 go 1.24.0
 
