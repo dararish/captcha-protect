@@ -13,6 +13,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
+	"syscall"
 	"text/template"
 	"time"
 
@@ -68,6 +70,8 @@ type CaptchaProtect struct {
 	ipv6Mask           net.IPMask
 	protectRoutesRegex []*regexp.Regexp
 	excludeRoutesRegex []*regexp.Regexp
+	stateMutex         sync.RWMutex
+	stateChanged       chan struct{}
 }
 
 type CaptchaConfig struct {
@@ -264,9 +268,10 @@ func NewCaptchaProtect(ctx context.Context, next http.Handler, config *Config, n
 	}
 
 	if config.PersistentStateFile != "" {
+		bc.stateChanged = make(chan struct{}, 1)
 		bc.loadState()
 		childCtx, cancel := context.WithCancel(ctx)
-		go bc.saveState(childCtx)
+		go bc.saveStateOnChange(childCtx)
 		go func() {
 			<-ctx.Done()
 			log.Debug("Context canceled, calling child cancel...")
@@ -373,6 +378,7 @@ func (bc *CaptchaProtect) verifyChallengePage(rw http.ResponseWriter, req *http.
 	}
 	if captchaResponse.Success {
 		bc.verifiedCache.Set(ip, true, lru.DefaultExpiration)
+		bc.notifyStateChange()
 		destination := req.FormValue("destination")
 		if destination == "" {
 			destination = "%2F"
@@ -572,12 +578,15 @@ func (bc *CaptchaProtect) trippedRateLimit(ip string) bool {
 func (bc *CaptchaProtect) registerRequest(ip string) {
 	err := bc.rateCache.Add(ip, uint(1), lru.DefaultExpiration)
 	if err == nil {
+		bc.notifyStateChange()
 		return
 	}
 
 	_, err = bc.rateCache.IncrementUint(ip, uint(1))
 	if err != nil {
 		log.Error("Unable to set rate cache", "ip", ip)
+	} else {
+		bc.notifyStateChange()
 	}
 }
 
@@ -671,6 +680,7 @@ func (bc *CaptchaProtect) isGoodBot(req *http.Request, clientIP string) bool {
 
 	v := helper.IsIpGoodBot(clientIP, bc.config.GoodBots)
 	bc.botCache.Set(clientIP, v, lru.DefaultExpiration)
+	bc.notifyStateChange()
 	return v
 }
 
@@ -690,44 +700,185 @@ func (c *Config) ParseHttpMethods() {
 	}
 }
 
-func (bc *CaptchaProtect) saveState(ctx context.Context) {
-	ticker := time.NewTicker(1 * time.Minute)
-	defer ticker.Stop()
-
+func (bc *CaptchaProtect) saveStateOnChange(ctx context.Context) {
+	// Test file access on startup
 	file, err := os.OpenFile(bc.config.PersistentStateFile, os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		log.Error("Unable to save state. Could not open or create file", "stateFile", bc.config.PersistentStateFile, "err", err)
 		return
 	}
-	// we made sure the file is writable, we can continue in our loop
 	file.Close()
 
 	for {
 		select {
-		case <-ticker.C:
-			log.Debug("Saving state")
-			state := state.GetState(bc.rateCache.Items(), bc.botCache.Items(), bc.verifiedCache.Items())
-			jsonData, err := json.Marshal(state)
-			if err != nil {
-				log.Error("failed unmarshalling state data", "err", err)
-				break
-			}
-			err = os.WriteFile(bc.config.PersistentStateFile, jsonData, 0644)
-			if err != nil {
-				log.Error("failed saving state data", "err", err)
-			}
-
+		case <-bc.stateChanged:
+			log.Debug("State changed, saving state")
+			bc.saveStateWithLock()
 		case <-ctx.Done():
-			log.Debug("Context cancelled, stopping saveState")
+			log.Debug("Context cancelled, stopping saveStateOnChange")
+			// Save final state before exiting
+			bc.saveStateWithLock()
 			return
 		}
 	}
 }
 
-func (bc *CaptchaProtect) loadState() {
+func (bc *CaptchaProtect) saveStateWithLock() {
+	bc.stateMutex.Lock()
+	defer bc.stateMutex.Unlock()
+
+	// Read current file state and reconcile differences
+	currentState := bc.readStateFromFile()
+	newState := state.GetState(bc.rateCache.Items(), bc.botCache.Items(), bc.verifiedCache.Items())
+
+	// Reconcile the states - merge current file state with new state
+	reconciledState := bc.reconcileStates(currentState, newState)
+
+	// Acquire file lock and write
+	err := bc.writeStateToFile(reconciledState)
+	if err != nil {
+		log.Error("failed saving state data", "err", err)
+	}
+}
+
+func (bc *CaptchaProtect) writeStateToFile(state state.State) error {
+	file, err := os.OpenFile(bc.config.PersistentStateFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return fmt.Errorf("unable to open state file: %w", err)
+	}
+	defer file.Close()
+
+	// Acquire exclusive file lock
+	err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX)
+	if err != nil {
+		return fmt.Errorf("unable to acquire file lock: %w", err)
+	}
+	defer syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+
+	jsonData, err := json.Marshal(state)
+	if err != nil {
+		return fmt.Errorf("failed marshalling state data: %w", err)
+	}
+
+	_, err = file.Write(jsonData)
+	if err != nil {
+		return fmt.Errorf("failed writing state data: %w", err)
+	}
+
+	return nil
+}
+
+func (bc *CaptchaProtect) readStateFromFile() state.State {
+	file, err := os.OpenFile(bc.config.PersistentStateFile, os.O_RDONLY, 0644)
+	if err != nil {
+		log.Debug("Unable to open state file for reading", "err", err)
+		return state.State{}
+	}
+	defer file.Close()
+
+	// Acquire shared file lock for reading
+	err = syscall.Flock(int(file.Fd()), syscall.LOCK_SH)
+	if err != nil {
+		log.Error("Unable to acquire shared file lock", "err", err)
+		return state.State{}
+	}
+	defer syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+
 	fileContent, err := os.ReadFile(bc.config.PersistentStateFile)
 	if err != nil || len(fileContent) == 0 {
-		log.Warn("Failed to load state file.", "err", err)
+		log.Debug("Failed to read state file content", "err", err)
+		return state.State{}
+	}
+
+	var fileState state.State
+	err = json.Unmarshal(fileContent, &fileState)
+	if err != nil {
+		log.Error("Failed to unmarshal state file", "err", err)
+		return state.State{}
+	}
+
+	return fileState
+}
+
+func (bc *CaptchaProtect) reconcileStates(fileState, memoryState state.State) state.State {
+	// Start with memory state as base
+	reconciledState := memoryState
+
+	// Initialize maps if they're nil
+	if reconciledState.Rate == nil {
+		reconciledState.Rate = make(map[string]uint)
+	}
+	if reconciledState.Bots == nil {
+		reconciledState.Bots = make(map[string]bool)
+	}
+	if reconciledState.Verified == nil {
+		reconciledState.Verified = make(map[string]bool)
+	}
+	if reconciledState.Memory == nil {
+		reconciledState.Memory = make(map[string]uintptr)
+	}
+
+	// Merge file state into memory state
+	// For rate limits, take the higher value (more restrictive)
+	for ip, fileRate := range fileState.Rate {
+		if memoryRate, exists := reconciledState.Rate[ip]; exists {
+			if fileRate > memoryRate {
+				reconciledState.Rate[ip] = fileRate
+			}
+		} else {
+			reconciledState.Rate[ip] = fileRate
+		}
+	}
+
+	// For bots, merge both states (union)
+	for ip, isBot := range fileState.Bots {
+		if _, exists := reconciledState.Bots[ip]; !exists {
+			reconciledState.Bots[ip] = isBot
+		}
+	}
+
+	// For verified, merge both states (union)
+	for ip, isVerified := range fileState.Verified {
+		if _, exists := reconciledState.Verified[ip]; !exists {
+			reconciledState.Verified[ip] = isVerified
+		}
+	}
+
+	return reconciledState
+}
+
+func (bc *CaptchaProtect) notifyStateChange() {
+	if bc.stateChanged != nil {
+		select {
+		case bc.stateChanged <- struct{}{}:
+		default:
+			// Channel is full, state change already pending
+		}
+	}
+}
+
+func (bc *CaptchaProtect) loadState() {
+	bc.stateMutex.Lock()
+	defer bc.stateMutex.Unlock()
+
+	file, err := os.OpenFile(bc.config.PersistentStateFile, os.O_RDONLY, 0644)
+	if err != nil {
+		log.Warn("Failed to open state file for loading", "err", err)
+		return
+	}
+	defer file.Close()
+
+	// Acquire shared file lock for reading
+	err = syscall.Flock(int(file.Fd()), syscall.LOCK_SH)
+	if err != nil {
+		log.Error("Unable to acquire shared file lock during load", "err", err)
+		return
+	}
+	defer syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+
+	fileContent, err := os.ReadFile(bc.config.PersistentStateFile)
+	if err != nil || len(fileContent) == 0 {
+		log.Warn("Failed to load state file content", "err", err)
 		return
 	}
 
