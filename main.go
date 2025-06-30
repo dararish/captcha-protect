@@ -14,10 +14,10 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"syscall"
 	"text/template"
 	"time"
 
+	"github.com/dararish/captcha-protect/internal/filelock"
 	"github.com/dararish/captcha-protect/internal/helper"
 	plog "github.com/dararish/captcha-protect/internal/log"
 	"github.com/dararish/captcha-protect/internal/state"
@@ -742,18 +742,21 @@ func (bc *CaptchaProtect) saveStateWithLock() {
 }
 
 func (bc *CaptchaProtect) writeStateToFile(state state.State) error {
+	// Create file lock
+	lock := filelock.New(bc.config.PersistentStateFile)
+
+	// Acquire exclusive lock
+	err := lock.Lock()
+	if err != nil {
+		return fmt.Errorf("unable to acquire file lock: %w", err)
+	}
+	defer lock.Unlock()
+
 	file, err := os.OpenFile(bc.config.PersistentStateFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
 		return fmt.Errorf("unable to open state file: %w", err)
 	}
 	defer file.Close()
-
-	// Acquire exclusive file lock
-	err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX)
-	if err != nil {
-		return fmt.Errorf("unable to acquire file lock: %w", err)
-	}
-	defer syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
 
 	jsonData, err := json.Marshal(state)
 	if err != nil {
@@ -769,20 +772,23 @@ func (bc *CaptchaProtect) writeStateToFile(state state.State) error {
 }
 
 func (bc *CaptchaProtect) readStateFromFile() state.State {
+	// Create file lock
+	lock := filelock.New(bc.config.PersistentStateFile)
+
+	// Acquire shared lock for reading
+	err := lock.Lock()
+	if err != nil {
+		log.Error("Unable to acquire file lock for reading", "err", err)
+		return state.State{}
+	}
+	defer lock.Unlock()
+
 	file, err := os.OpenFile(bc.config.PersistentStateFile, os.O_RDONLY, 0644)
 	if err != nil {
 		log.Debug("Unable to open state file for reading", "err", err)
 		return state.State{}
 	}
 	defer file.Close()
-
-	// Acquire shared file lock for reading
-	err = syscall.Flock(int(file.Fd()), syscall.LOCK_SH)
-	if err != nil {
-		log.Error("Unable to acquire shared file lock", "err", err)
-		return state.State{}
-	}
-	defer syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
 
 	fileContent, err := os.ReadFile(bc.config.PersistentStateFile)
 	if err != nil || len(fileContent) == 0 {
@@ -861,20 +867,23 @@ func (bc *CaptchaProtect) loadState() {
 	bc.stateMutex.Lock()
 	defer bc.stateMutex.Unlock()
 
+	// Create file lock
+	lock := filelock.New(bc.config.PersistentStateFile)
+
+	// Acquire lock for reading
+	err := lock.Lock()
+	if err != nil {
+		log.Error("Unable to acquire file lock during load", "err", err)
+		return
+	}
+	defer lock.Unlock()
+
 	file, err := os.OpenFile(bc.config.PersistentStateFile, os.O_RDONLY, 0644)
 	if err != nil {
 		log.Warn("Failed to open state file for loading", "err", err)
 		return
 	}
 	defer file.Close()
-
-	// Acquire shared file lock for reading
-	err = syscall.Flock(int(file.Fd()), syscall.LOCK_SH)
-	if err != nil {
-		log.Error("Unable to acquire shared file lock during load", "err", err)
-		return
-	}
-	defer syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
 
 	fileContent, err := os.ReadFile(bc.config.PersistentStateFile)
 	if err != nil || len(fileContent) == 0 {
