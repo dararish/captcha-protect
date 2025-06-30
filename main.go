@@ -910,7 +910,11 @@ func (bc *CaptchaProtect) loadState() {
 		bc.verifiedCache.Set(k, v, lru.DefaultExpiration)
 	}
 
-	log.Info("Loaded previous state")
+	log.Info("Loaded previous state",
+		"rateEntries", len(state.Rate),
+		"botEntries", len(state.Bots),
+		"verifiedEntries", len(state.Verified),
+		"stateFile", bc.config.PersistentStateFile)
 }
 
 func (bc *CaptchaProtect) ChallengeOnPage() bool {
