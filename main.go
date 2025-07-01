@@ -72,6 +72,7 @@ type CaptchaProtect struct {
 	excludeRoutesRegex []*regexp.Regexp
 	stateMutex         sync.RWMutex
 	stateChanged       chan struct{}
+	lastStateReload    time.Time
 }
 
 type CaptchaConfig struct {
@@ -283,6 +284,11 @@ func NewCaptchaProtect(ctx context.Context, next http.Handler, config *Config, n
 }
 
 func (bc *CaptchaProtect) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+	// Reload state from file every 5 seconds if persistent state is enabled
+	if bc.config.PersistentStateFile != "" {
+		bc.reloadStateIfNeeded()
+	}
+
 	clientIP, ipRange := bc.getClientIP(req)
 	challengeOnPage := bc.ChallengeOnPage()
 	if challengeOnPage && req.Method == http.MethodPost {
@@ -915,6 +921,70 @@ func (bc *CaptchaProtect) loadState() {
 		"botEntries", len(state.Bots),
 		"verifiedEntries", len(state.Verified),
 		"stateFile", bc.config.PersistentStateFile)
+}
+
+func (bc *CaptchaProtect) reloadStateIfNeeded() {
+	// Check if 5 seconds have passed since last reload (with read lock for thread safety)
+	bc.stateMutex.RLock()
+	lastReload := bc.lastStateReload
+	bc.stateMutex.RUnlock()
+
+	now := time.Now()
+	if now.Sub(lastReload) < 5*time.Second {
+		return
+	}
+
+	// Double-check with write lock to avoid race conditions
+	bc.stateMutex.Lock()
+	if now.Sub(bc.lastStateReload) < 5*time.Second {
+		bc.stateMutex.Unlock()
+		return
+	}
+	bc.lastStateReload = now
+	bc.stateMutex.Unlock()
+
+	bc.reloadStateFromFile()
+}
+
+func (bc *CaptchaProtect) reloadStateFromFile() {
+	bc.stateMutex.Lock()
+	defer bc.stateMutex.Unlock()
+
+	// Read current file state
+	fileState := bc.readStateFromFile()
+	if len(fileState.Rate) == 0 && len(fileState.Bots) == 0 && len(fileState.Verified) == 0 {
+		// No state to reload
+		return
+	}
+
+	// Get current memory state
+	memoryState := state.GetState(bc.rateCache.Items(), bc.botCache.Items(), bc.verifiedCache.Items())
+
+	// Reconcile file state with memory state
+	reconciledState := bc.reconcileStates(fileState, memoryState)
+
+	// Clear current caches
+	bc.rateCache.Flush()
+	bc.botCache.Flush()
+	bc.verifiedCache.Flush()
+
+	// Load reconciled state into caches
+	for k, v := range reconciledState.Rate {
+		bc.rateCache.Set(k, v, lru.DefaultExpiration)
+	}
+
+	for k, v := range reconciledState.Bots {
+		bc.botCache.Set(k, v, lru.DefaultExpiration)
+	}
+
+	for k, v := range reconciledState.Verified {
+		bc.verifiedCache.Set(k, v, lru.DefaultExpiration)
+	}
+
+	log.Debug("Reloaded state from file",
+		"rateEntries", len(reconciledState.Rate),
+		"botEntries", len(reconciledState.Bots),
+		"verifiedEntries", len(reconciledState.Verified))
 }
 
 func (bc *CaptchaProtect) ChallengeOnPage() bool {
