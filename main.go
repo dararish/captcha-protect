@@ -818,13 +818,13 @@ func (bc *CaptchaProtect) reconcileStates(fileState, memoryState state.State) st
 
 	// Initialize maps if they're nil
 	if reconciledState.Rate == nil {
-		reconciledState.Rate = make(map[string]uint)
+		reconciledState.Rate = make(map[string]state.StateItem)
 	}
 	if reconciledState.Bots == nil {
-		reconciledState.Bots = make(map[string]bool)
+		reconciledState.Bots = make(map[string]state.StateItem)
 	}
 	if reconciledState.Verified == nil {
-		reconciledState.Verified = make(map[string]bool)
+		reconciledState.Verified = make(map[string]state.StateItem)
 	}
 	if reconciledState.Memory == nil {
 		reconciledState.Memory = make(map[string]uintptr)
@@ -832,27 +832,39 @@ func (bc *CaptchaProtect) reconcileStates(fileState, memoryState state.State) st
 
 	// Merge file state into memory state
 	// For rate limits, take the higher value (more restrictive)
-	for ip, fileRate := range fileState.Rate {
-		if memoryRate, exists := reconciledState.Rate[ip]; exists {
+	for ip, fileRateItem := range fileState.Rate {
+		if memoryRateItem, exists := reconciledState.Rate[ip]; exists {
+			fileRate := fileRateItem.Value.(uint)
+			memoryRate := memoryRateItem.Value.(uint)
 			if fileRate > memoryRate {
-				reconciledState.Rate[ip] = fileRate
+				reconciledState.Rate[ip] = fileRateItem
 			}
 		} else {
-			reconciledState.Rate[ip] = fileRate
+			reconciledState.Rate[ip] = fileRateItem
 		}
 	}
 
-	// For bots, merge both states (union)
-	for ip, isBot := range fileState.Bots {
-		if _, exists := reconciledState.Bots[ip]; !exists {
-			reconciledState.Bots[ip] = isBot
+	// For bots, merge both states (union), prefer items with later expiration
+	for ip, fileBotItem := range fileState.Bots {
+		if memoryBotItem, exists := reconciledState.Bots[ip]; exists {
+			// Keep the item with later expiration (or non-expiring item)
+			if fileBotItem.Expiration == 0 || (memoryBotItem.Expiration > 0 && fileBotItem.Expiration > memoryBotItem.Expiration) {
+				reconciledState.Bots[ip] = fileBotItem
+			}
+		} else {
+			reconciledState.Bots[ip] = fileBotItem
 		}
 	}
 
-	// For verified, merge both states (union)
-	for ip, isVerified := range fileState.Verified {
-		if _, exists := reconciledState.Verified[ip]; !exists {
-			reconciledState.Verified[ip] = isVerified
+	// For verified, merge both states (union), prefer items with later expiration
+	for ip, fileVerifiedItem := range fileState.Verified {
+		if memoryVerifiedItem, exists := reconciledState.Verified[ip]; exists {
+			// Keep the item with later expiration (or non-expiring item)
+			if fileVerifiedItem.Expiration == 0 || (memoryVerifiedItem.Expiration > 0 && fileVerifiedItem.Expiration > memoryVerifiedItem.Expiration) {
+				reconciledState.Verified[ip] = fileVerifiedItem
+			}
+		} else {
+			reconciledState.Verified[ip] = fileVerifiedItem
 		}
 	}
 
@@ -904,16 +916,49 @@ func (bc *CaptchaProtect) loadState() {
 		return
 	}
 
-	for k, v := range state.Rate {
-		bc.rateCache.Set(k, v, lru.DefaultExpiration)
+	for k, item := range state.Rate {
+		var duration time.Duration
+		if item.Expiration > 0 {
+			expTime := time.Unix(0, item.Expiration)
+			duration = time.Until(expTime)
+			if duration <= 0 {
+				// Item has expired, skip it
+				continue
+			}
+		} else {
+			duration = lru.DefaultExpiration
+		}
+		bc.rateCache.Set(k, item.Value.(uint), duration)
 	}
 
-	for k, v := range state.Bots {
-		bc.botCache.Set(k, v, lru.DefaultExpiration)
+	for k, item := range state.Bots {
+		var duration time.Duration
+		if item.Expiration > 0 {
+			expTime := time.Unix(0, item.Expiration)
+			duration = time.Until(expTime)
+			if duration <= 0 {
+				// Item has expired, skip it
+				continue
+			}
+		} else {
+			duration = lru.DefaultExpiration
+		}
+		bc.botCache.Set(k, item.Value.(bool), duration)
 	}
 
-	for k, v := range state.Verified {
-		bc.verifiedCache.Set(k, v, lru.DefaultExpiration)
+	for k, item := range state.Verified {
+		var duration time.Duration
+		if item.Expiration > 0 {
+			expTime := time.Unix(0, item.Expiration)
+			duration = time.Until(expTime)
+			if duration <= 0 {
+				// Item has expired, skip it
+				continue
+			}
+		} else {
+			duration = lru.DefaultExpiration
+		}
+		bc.verifiedCache.Set(k, item.Value.(bool), duration)
 	}
 
 	log.Info("Loaded previous state",
@@ -969,16 +1014,49 @@ func (bc *CaptchaProtect) reloadStateFromFile() {
 	bc.verifiedCache.Flush()
 
 	// Load reconciled state into caches
-	for k, v := range reconciledState.Rate {
-		bc.rateCache.Set(k, v, lru.DefaultExpiration)
+	for k, item := range reconciledState.Rate {
+		var duration time.Duration
+		if item.Expiration > 0 {
+			expTime := time.Unix(0, item.Expiration)
+			duration = time.Until(expTime)
+			if duration <= 0 {
+				// Item has expired, skip it
+				continue
+			}
+		} else {
+			duration = lru.DefaultExpiration
+		}
+		bc.rateCache.Set(k, item.Value.(uint), duration)
 	}
 
-	for k, v := range reconciledState.Bots {
-		bc.botCache.Set(k, v, lru.DefaultExpiration)
+	for k, item := range reconciledState.Bots {
+		var duration time.Duration
+		if item.Expiration > 0 {
+			expTime := time.Unix(0, item.Expiration)
+			duration = time.Until(expTime)
+			if duration <= 0 {
+				// Item has expired, skip it
+				continue
+			}
+		} else {
+			duration = lru.DefaultExpiration
+		}
+		bc.botCache.Set(k, item.Value.(bool), duration)
 	}
 
-	for k, v := range reconciledState.Verified {
-		bc.verifiedCache.Set(k, v, lru.DefaultExpiration)
+	for k, item := range reconciledState.Verified {
+		var duration time.Duration
+		if item.Expiration > 0 {
+			expTime := time.Unix(0, item.Expiration)
+			duration = time.Until(expTime)
+			if duration <= 0 {
+				// Item has expired, skip it
+				continue
+			}
+		} else {
+			duration = lru.DefaultExpiration
+		}
+		bc.verifiedCache.Set(k, item.Value.(bool), duration)
 	}
 
 	log.Debug("Reloaded state from file",
