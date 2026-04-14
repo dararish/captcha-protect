@@ -586,3 +586,35 @@ func TestIsGoodUserAgent(t *testing.T) {
 		}
 	}
 }
+
+func TestIsExemptHost(t *testing.T) {
+	tests := []struct {
+		name        string
+		exemptHosts []string
+		host        string
+		expected    bool
+	}{
+		{"Exact match", []string{"mcp.example.com"}, "mcp.example.com", true},
+		{"Case insensitive match", []string{"mcp.example.com"}, "MCP.Example.COM", true},
+		{"Match with port", []string{"mcp.example.com"}, "mcp.example.com:8443", true},
+		{"Non-matching host", []string{"mcp.example.com"}, "other.example.com", false},
+		{"Empty exempt list", []string{}, "mcp.example.com", false},
+		{"Empty host", []string{"mcp.example.com"}, "", false},
+		{"Multiple entries, second matches", []string{"a.example.com", "b.example.com"}, "b.example.com", true},
+	}
+	config := CreateConfig()
+	config.ProtectRoutes = []string{"/"}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			config.ExemptHosts = tc.exemptHosts
+			cp, err := NewCaptchaProtect(context.Background(), nil, config, "captcha-protect")
+			if err != nil {
+				t.Fatalf("unexpected error %v", err)
+			}
+			got := cp.isExemptHost(tc.host)
+			if got != tc.expected {
+				t.Errorf("isExemptHost(%q) with exempts %v = %v; want %v", tc.host, tc.exemptHosts, got, tc.expected)
+			}
+		})
+	}
+}

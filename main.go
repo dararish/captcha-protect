@@ -44,6 +44,7 @@ type Config struct {
 	GoodBots              []string `json:"goodBots"`
 	ExemptIPs             []string `json:"exemptIps"`
 	ExemptUserAgents      []string `json:"exemptUserAgents"`
+	ExemptHosts           []string `json:"exemptHosts"`
 	ChallengeURL          string   `json:"challengeURL"`
 	ChallengeTmpl         string   `json:"challengeTmpl"`
 	ChallengeStatusCode   int      `json:"challengeStatusCode"`
@@ -100,6 +101,7 @@ func CreateConfig() *Config {
 		GoodBots:              []string{},
 		ExemptIPs:             []string{},
 		ExemptUserAgents:      []string{},
+		ExemptHosts:           []string{},
 		ChallengeURL:          "/challenge",
 		ChallengeTmpl:         "challenge.tmpl.html",
 		ChallengeStatusCode:   0,
@@ -434,6 +436,10 @@ func (bc *CaptchaProtect) shouldApply(req *http.Request, clientIP string) bool {
 		return false
 	}
 
+	if bc.isExemptHost(req.Host) {
+		return false
+	}
+
 	_, verified := bc.verifiedCache.Get(clientIP)
 	if verified {
 		return false
@@ -538,6 +544,21 @@ func (bc *CaptchaProtect) isGoodUserAgent(ua string) bool {
 		}
 	}
 
+	return false
+}
+
+func (bc *CaptchaProtect) isExemptHost(host string) bool {
+	if len(bc.config.ExemptHosts) == 0 || host == "" {
+		return false
+	}
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	for _, exempt := range bc.config.ExemptHosts {
+		if strings.EqualFold(host, exempt) {
+			return true
+		}
+	}
 	return false
 }
 
