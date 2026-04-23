@@ -593,13 +593,39 @@ protected:
 	return false
 }
 
+// toUint safely converts an interface{} to uint. JSON deserialized via
+// yaegi's interpreter arrives as float64, while in-memory values from
+// go-cache's IncrementUint arrive as uint. Handle both.
+func toUint(v interface{}) uint {
+	switch val := v.(type) {
+	case uint:
+		return val
+	case float64:
+		return uint(val)
+	case int:
+		return uint(val)
+	case int64:
+		return uint(val)
+	case uint64:
+		return uint(val)
+	default:
+		return 0
+	}
+}
+
+// toBool safely converts an interface{} to bool.
+func toBool(v interface{}) bool {
+	val, ok := v.(bool)
+	return ok && val
+}
+
 func (bc *CaptchaProtect) trippedRateLimit(ip string) bool {
 	v, ok := bc.rateCache.Get(ip)
 	if !ok {
 		log.Error("IP not found, but should already be set", "ip", ip)
 		return false
 	}
-	return v.(uint) > bc.config.RateLimit
+	return toUint(v) > bc.config.RateLimit
 }
 
 func (bc *CaptchaProtect) registerRequest(ip string) {
@@ -855,8 +881,8 @@ func (bc *CaptchaProtect) reconcileStates(fileState, memoryState state.State) st
 	// For rate limits, take the higher value (more restrictive)
 	for ip, fileRateItem := range fileState.Rate {
 		if memoryRateItem, exists := reconciledState.Rate[ip]; exists {
-			fileRate := fileRateItem.Value.(uint)
-			memoryRate := memoryRateItem.Value.(uint)
+			fileRate := toUint(fileRateItem.Value)
+			memoryRate := toUint(memoryRateItem.Value)
 			if fileRate > memoryRate {
 				reconciledState.Rate[ip] = fileRateItem
 			}
@@ -949,7 +975,7 @@ func (bc *CaptchaProtect) loadState() {
 		} else {
 			duration = lru.DefaultExpiration
 		}
-		bc.rateCache.Set(k, item.Value.(uint), duration)
+		bc.rateCache.Set(k, toUint(item.Value), duration)
 	}
 
 	for k, item := range state.Bots {
@@ -964,7 +990,7 @@ func (bc *CaptchaProtect) loadState() {
 		} else {
 			duration = lru.DefaultExpiration
 		}
-		bc.botCache.Set(k, item.Value.(bool), duration)
+		bc.botCache.Set(k, toBool(item.Value), duration)
 	}
 
 	for k, item := range state.Verified {
@@ -979,7 +1005,7 @@ func (bc *CaptchaProtect) loadState() {
 		} else {
 			duration = lru.DefaultExpiration
 		}
-		bc.verifiedCache.Set(k, item.Value.(bool), duration)
+		bc.verifiedCache.Set(k, toBool(item.Value), duration)
 	}
 
 	log.Info("Loaded previous state",
@@ -1047,7 +1073,7 @@ func (bc *CaptchaProtect) reloadStateFromFile() {
 		} else {
 			duration = lru.DefaultExpiration
 		}
-		bc.rateCache.Set(k, item.Value.(uint), duration)
+		bc.rateCache.Set(k, toUint(item.Value), duration)
 	}
 
 	for k, item := range reconciledState.Bots {
@@ -1062,7 +1088,7 @@ func (bc *CaptchaProtect) reloadStateFromFile() {
 		} else {
 			duration = lru.DefaultExpiration
 		}
-		bc.botCache.Set(k, item.Value.(bool), duration)
+		bc.botCache.Set(k, toBool(item.Value), duration)
 	}
 
 	for k, item := range reconciledState.Verified {
@@ -1077,7 +1103,7 @@ func (bc *CaptchaProtect) reloadStateFromFile() {
 		} else {
 			duration = lru.DefaultExpiration
 		}
-		bc.verifiedCache.Set(k, item.Value.(bool), duration)
+		bc.verifiedCache.Set(k, toBool(item.Value), duration)
 	}
 
 	log.Debug("Reloaded state from file",
